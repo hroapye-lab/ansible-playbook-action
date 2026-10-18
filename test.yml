@@ -1,0 +1,9 @@
+---
+- name: Test action
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Print message
+      ansible.builtin.debug:
+        msg: ansible-playbook-action ok

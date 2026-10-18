@@ -1,0 +1,113 @@
+name: Run Ansible playbook
+description: 安装 collections 后在指定工作目录执行 ansible-playbook，默认只检查
+
+inputs:
+  # 执行目录
+  working_directory:
+    description: 执行目录（相对仓库根目录），Playbook 和 Inventory 的相对路径以它为准
+    required: false
+    default: "."
+
+  # 执行目标
+  playbook:
+    description: Playbook 文件（相对执行目录）
+    required: true
+  inventory:
+    description: Inventory 文件（相对执行目录）；留空时由 Ansible 使用 ANSIBLE_INVENTORY 或 ansible.cfg
+    required: false
+    default: ""
+  requirements:
+    description: requirements 文件路径清单，每行一个，相对仓库根目录；空行和 # 开头的行忽略
+    required: false
+    default: |
+      requirements.yml
+
+  # 运行模式
+  check:
+    description: 是否只检查（--check）；false 才实际变更，空值按 true 处理
+    required: false
+    default: "true"
+
+  # 主机与任务筛选
+  limit:
+    description: --limit 的值，留空表示全部主机
+    required: false
+    default: ""
+  tags:
+    description: --tags 的值，留空表示全部任务
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: install collections
+      shell: bash
+      env:
+        # 多行 requirements 清单通过环境变量传入，脚本按行读取。
+        INPUT_REQUIREMENTS: ${{ inputs.requirements }}
+      run: |
+        set -euo pipefail
+
+        # requirements 路径相对仓库根目录，不受 working_directory 影响。
+        while IFS= read -r file; do
+          if [ -z "$file" ] || [[ "$file" == \#* ]]; then
+            continue
+          fi
+          echo "ansible-galaxy collection install --requirements-file $file"
+          ansible-galaxy collection install --requirements-file "$file"
+        done <<< "$INPUT_REQUIREMENTS"
+
+    - name: ansible-playbook
+      shell: bash
+      env:
+        # 通过环境变量传入脚本，避免把输入直接拼进命令行
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working_directory }}
+        INPUT_PLAYBOOK: ${{ inputs.playbook }}
+        INPUT_INVENTORY: ${{ inputs.inventory }}
+        INPUT_CHECK: ${{ inputs.check }}
+        INPUT_LIMIT: ${{ inputs.limit }}
+        INPUT_TAGS: ${{ inputs.tags }}
+      run: |
+        set -euo pipefail
+
+        # 进入执行目录，ansible.cfg、templates 等相对路径都以这里为基准。
+        cd "${INPUT_WORKING_DIRECTORY:-.}"
+
+        # 与 Ansible 的路径处理保持一致，展开开头的 ~。
+        key_file="${ANSIBLE_PRIVATE_KEY_FILE:-}"
+        if [[ "$key_file" == "~/"* ]]; then
+          key_file="$HOME/${key_file:2}"
+        fi
+
+        # 变量为空，或指向的文件不存在时，还原为“未设置”。
+        # 否则 Ansible 会把空值解析成当前目录，或直接使用一个无效路径。
+        if [ -z "$key_file" ] || [ ! -f "$key_file" ]; then
+          unset ANSIBLE_PRIVATE_KEY_FILE
+        fi
+
+        # 始终输出 diff，便于在 CI 日志中查看变更内容。
+        args=(--diff)
+
+        # 只有显式传入 inventory 时才覆盖 Ansible 的默认来源。
+        if [ -n "${INPUT_INVENTORY:-}" ]; then
+          args+=(--inventory "$INPUT_INVENTORY")
+        fi
+
+        # 只有明确传 false 才实际变更；空值按默认检查处理。
+        check="${INPUT_CHECK:-true}"
+        if [ "$check" != "false" ]; then
+          args+=(--check)
+        fi
+
+        # limit 和 tags 都是可选的筛选条件。
+        if [ -n "${INPUT_LIMIT:-}" ]; then
+          args+=(--limit "$INPUT_LIMIT")
+        fi
+        if [ -n "${INPUT_TAGS:-}" ]; then
+          args+=(--tags "$INPUT_TAGS")
+        fi
+
+        # key 的选择交给 inventory 的 ansible_ssh_private_key_file。
+        echo "ansible-playbook ${INPUT_PLAYBOOK} ${args[*]}"
+        ansible-playbook "$INPUT_PLAYBOOK" "${args[@]}"

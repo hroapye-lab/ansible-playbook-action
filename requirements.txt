@@ -1,0 +1,2 @@
+# 自测用；使用者也可以在自己的 workflow 里安装 Ansible
+ansible
